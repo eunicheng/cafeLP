@@ -4,6 +4,10 @@ import pandas as pd
 
 # load data and LP settings
 
+## notes: most sensitive on restaurant wait time
+## it doesn't seem to matter what N to start with
+## it doesn't seem to matter 
+
 group = sys.argv[1]
 path = None
 if group == "a":
@@ -18,24 +22,26 @@ dataset = pd.read_csv(path)
 people = range(len(dataset))
 
 names = ["The Exchange","Resnik Cafe","La Prima","ABP","Chipotle"]
-serviceTime = [1,3,2,6,1] # wait time per person
+serviceTime = [2,4,3,4,1] # wait time per person
 places = range(len(names))
 
 preferences = dataset.loc[:, 'pref Exchange':'pref Chipotle']
 travelTime = dataset.loc[:, 'travel Exchange':'travel Chipotle']
 willingnessToWait = dataset.loc[:, 'wait Exchange':'wait Chipotle']
 
-minSatisfaction = 50 # will change in the future, too high and the solution is infeasible
-
 # starting number of people assigned to restaurants
 # solution will iterate on this list
 oldN = None
 N = [0]*len(names)
 
-while (oldN != N):
+iterations = 0
+
+while (oldN != N) and iterations < 5:
+
+    iterations += 1
 
     # start problem
-    problem = pulp.LpProblem("cafe lunch problem", sense=pulp.LpMinimize)
+    problem = pulp.LpProblem("cafe lunch problem", sense=pulp.LpMaximize)
 
     # variables
     assignments = pulp.LpVariable.dicts("A", ((person, place) for person in people for place in places), cat="Binary")
@@ -45,46 +51,66 @@ while (oldN != N):
     for person in people:
         problem += pulp.lpSum(assignments[person, place] for place in places) == 1
 
-    # satisfaction constraint
-    problem += pulp.lpSum(assignments[person, place]*preferences.iloc[person][place] - (willingnessToWait.iloc[person][place] - (N[place] * serviceTime[place]))  for person in people for place in places) >= (minSatisfaction * len(people))
-
-    # convert min max to LP
+    # time limit constraint
     for person in people:
-        problem += pulp.lpSum(assignments[person, place]*(N[place] * serviceTime[place] + travelTime.iloc[person][place]) for place in places) <= W
+        problem += pulp.lpSum(assignments[person, place]*(N[place] * serviceTime[place] + 2*travelTime.iloc[person][place] + 15) for place in places) <= 60
 
     # objective
-    problem += W
+    problem += pulp.lpSum(assignments[person, place]*preferences.iloc[person][place] + (willingnessToWait.iloc[person][place] - (N[place] * serviceTime[place]))  for person in people for place in places)
 
     # solution
     problem.solve()
 
+    # printing results
+    
     oldN = N
     sanitycheck = 0
     N = []
+
+    resultsPerson = []
+    resultsEat = []
+    resultsPref = []
+    resultsTime = []
+    resultsSatisfaction = []
+
     for place in places:
         n=0
         for person in people:
             if pulp.value(assignments[person, place]) == 1:
                 n+=1
                 sanitycheck+=1
-                print(f"    {names[place]}: {person}")
+                resultsPerson.append(person)
+                resultsEat.append(names[place])
+                resultsPref.append(preferences.iloc[person][place]) 
+                resultsTime.append(oldN[place]*serviceTime[place] + 2*travelTime.iloc[person][place] + 15)
+                resultsSatisfaction.append(preferences.iloc[person][place] + (willingnessToWait.iloc[person][place] - (oldN[place] * serviceTime[place])) )
         N.append(n)
 
     print(pulp.LpStatus[problem.status])
     print(sanitycheck==len(people))
     print()
 
-    print("wait time:")
-    print(pulp.value(problem.objective))
+    if N != oldN:
+        resultsTime.append(N[place]*serviceTime[place] + 2*travelTime.iloc[person][place] + 15) #use newN to calculate
+        resultsSatisfaction.append(preferences.iloc[person][place] + (willingnessToWait.iloc[person][place] - (N[place] * serviceTime[place])) )
+
+        #recalcualte objective 
+        obj = 0
+        for place in places:
+            for person in people:
+                obj += pulp.value(assignments[person, place])*preferences.iloc[person][place] + (willingnessToWait.iloc[person][place] - (N[place] * serviceTime[place]))
+
+    mapped = sorted(zip(resultsPerson,resultsEat,resultsPref,resultsTime,resultsSatisfaction), key=lambda pair: pair[0])
+
+    for person, eat, pref, wait, sat in mapped: 
+        print("Person %d goes to %s (%d), total lunch time: %d, satisfaction: %d" %(person,eat,pref,wait,sat))
+
+    if N != oldN:
+        print("Average Satisfaction :",obj/len(people))
+    else:
+        print("Average Satisfaction: ",pulp.value(problem.objective)/len(people))
+
     print()
-
-    print("satisfaction:")
-    print(pulp.value(pulp.lpSum(assignments[person, place]*preferences.iloc[person][place] - (willingnessToWait.iloc[person][place] - (N[place] * serviceTime[place]))  for person in people for place in places)) / len(people))
+    print("max lunch time: ", max(resultsTime))
     print()
-
-    print("old N:",oldN)
-    print("new N:",N)
-
-    break # remove the break to start converging, currently does not stop :(
-
-
+    print("N:",N) 
